@@ -148,14 +148,17 @@ async function query(
   state: State,
   request: QueryRequest
 ): Promise<QueryResponse> {
-  const rows = request.query.fields && (await fetch_rows(state, request));
+  const rows =
+    request.query.fields &&
+    (await fetch_rows(state, request.query, request.collection));
 
   return [{ rows }];
 }
 
 async function fetch_rows(
   state: State,
-  request: QueryRequest
+  query: Query,
+  collection: string
 ): Promise<
   {
     [k: string]: RowFieldValue;
@@ -163,9 +166,9 @@ async function fetch_rows(
 > {
   const fields = [];
 
-  for (const fieldName in request.query.fields) {
-    if (Object.prototype.hasOwnProperty.call(request.query.fields, fieldName)) {
-      const field = request.query.fields[fieldName];
+  for (const fieldName in query.fields) {
+    if (Object.prototype.hasOwnProperty.call(query.fields, fieldName)) {
+      const field = query.fields[fieldName];
       switch (field.type) {
         case "column":
           fields.push(`${field.column} AS ${fieldName}`);
@@ -176,26 +179,109 @@ async function fetch_rows(
     }
   }
 
-  if (request.query.order_by != null) {
+  if (query.order_by != null) {
     throw new NotSupported("Sorting is not supported");
   }
 
-  const limit_clause =
-    request.query.limit == null ? "" : `LIMIT ${request.query.limit}`;
-  const offset_clause =
-    request.query.offset == null ? "" : `OFFSET ${request.query.offset}`;
+  const limit_clause = query.limit == null ? "" : `LIMIT ${query.limit}`;
+  const offset_clause = query.offset == null ? "" : `OFFSET ${query.offset}`;
+
+  const parameters: any[] = [];
+
+  const where_clause =
+    query.predicate == null
+      ? ""
+      : `WHERE ${visit_expression(parameters, query.predicate)}`;
 
   const sql = `SELECT ${
     fields.length ? fields.join(", ") : "1 AS __empty"
-  } FROM ${request.collection} ${limit_clause} ${offset_clause}`;
+  } FROM ${collection} ${where_clause} ${limit_clause} ${offset_clause}`;
 
-  console.log(JSON.stringify({ sql }, null, 2));
+  console.log(JSON.stringify({ sql, parameters }, null, 2));
 
-  const rows = (await state.db.query(sql)).rows;
+  const rows = (await state.db.query({ text: sql, values: parameters })).rows;
   return rows.map((row) => {
     delete row.__empty;
     return row;
   });
+}
+
+function visit_expression(parameters: any[], expr: Expression): string {
+  switch (expr.type) {
+    case "and":
+      if (expr.expressions.length > 0) {
+        return expr.expressions
+          .map((e) => visit_expression_with_parens(parameters, e))
+          .join(" AND ");
+      } else {
+        return "TRUE";
+      }
+    case "or":
+      if (expr.expressions.length > 0) {
+        return expr.expressions
+          .map((e) => visit_expression_with_parens(parameters, e))
+          .join(" OR ");
+      } else {
+        return "FALSE";
+      }
+    case "not":
+      return `NOT ${visit_expression_with_parens(parameters, expr.expression)}`;
+    case "unary_comparison_operator":
+      switch (expr.operator) {
+        case "is_null":
+          return `${visit_comparison_target(expr.column)} IS NULL`;
+        default:
+          throw new BadRequest("Unknown comparison operator");
+      }
+    case "binary_comparison_operator":
+      switch (expr.operator) {
+        case "eq":
+          return `${visit_comparison_target(
+            expr.column
+          )} = ${visit_comparison_value(parameters, expr.value)}`;
+        case "like":
+          return `${visit_comparison_target(
+            expr.column
+          )} LIKE ${visit_comparison_value(parameters, expr.value)}`;
+        default:
+          throw new BadRequest("Unknown comparison operator");
+      }
+    case "exists":
+      throw new NotSupported("exists is not supported");
+    default:
+      throw new BadRequest("Unknown expression type");
+  }
+}
+
+function visit_expression_with_parens(
+  parameters: any[],
+  expr: Expression
+): string {
+  return `(${visit_expression(parameters, expr)})`;
+}
+
+function visit_comparison_target(target: ComparisonTarget) {
+  switch (target.type) {
+    case "column":
+      if (target.path.length > 0) {
+        throw new NotSupported("Relationships are not supported");
+      }
+      return target.name;
+    case "root_collection_column":
+      throw new NotSupported("Relationships are not supported");
+  }
+}
+
+function visit_comparison_value(parameters: any[], target: ComparisonValue) {
+  switch (target.type) {
+    case "scalar":
+      parameters.push(target.value);
+      return "$" + parameters.length;
+    case "column":
+      throw new NotSupported("column_comparisons are not supported");
+    case "variable":
+      throw new NotSupported("Variables are not supported");
+  }
 }
 
 async function fetchMetrics(
