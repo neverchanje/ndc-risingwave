@@ -60,36 +60,24 @@ type State = {
 async function parseConfiguration(
   configurationDir: string
 ): Promise<Configuration> {
-  try {
-    const configuration_file = resolve(configurationDir, "configuration.json");
-    const configuration_data = await readFile(configuration_file);
-    return JSON.parse(configuration_data.toString());
-  } catch (x) {
-    throw new ConnectorError(500, "Failed to parse configuration: ", {
-      exception: x,
-    });
-  }
+  const configuration_file = resolve(configurationDir, "configuration.json");
+  const configuration_data = await readFile(configuration_file);
+  return JSON.parse(configuration_data.toString());
 }
 
 async function tryInitState(
   configuration: Configuration,
   registry: Registry
 ): Promise<State> {
-  try {
-    const db = new pg.Pool({
-      user: configuration.risingwave.user,
-      password: configuration.risingwave.password,
-      database: configuration.risingwave.database,
-      host: configuration.risingwave.host,
-      port: configuration.risingwave.port,
-    });
+  const db = new pg.Pool({
+    user: configuration.risingwave.user,
+    password: configuration.risingwave.password,
+    database: configuration.risingwave.database,
+    host: configuration.risingwave.host,
+    port: configuration.risingwave.port,
+  });
 
-    return { db };
-  } catch (x) {
-    throw new ConnectorError(500, "Failed to instantiate states: ", {
-      exception: x,
-    });
-  }
+  return { db };
 }
 
 function getCapabilities(configuration: Configuration): CapabilitiesResponse {
@@ -160,7 +148,54 @@ async function query(
   state: State,
   request: QueryRequest
 ): Promise<QueryResponse> {
-  throw new Error("Function not implemented.");
+  const rows = request.query.fields && (await fetch_rows(state, request));
+
+  return [{ rows }];
+}
+
+async function fetch_rows(
+  state: State,
+  request: QueryRequest
+): Promise<
+  {
+    [k: string]: RowFieldValue;
+  }[]
+> {
+  const fields = [];
+
+  for (const fieldName in request.query.fields) {
+    if (Object.prototype.hasOwnProperty.call(request.query.fields, fieldName)) {
+      const field = request.query.fields[fieldName];
+      switch (field.type) {
+        case "column":
+          fields.push(`${field.column} AS ${fieldName}`);
+          break;
+        case "relationship":
+          throw new Error("Relationships are not supported");
+      }
+    }
+  }
+
+  if (request.query.order_by != null) {
+    throw new NotSupported("Sorting is not supported");
+  }
+
+  const limit_clause =
+    request.query.limit == null ? "" : `LIMIT ${request.query.limit}`;
+  const offset_clause =
+    request.query.offset == null ? "" : `OFFSET ${request.query.offset}`;
+
+  const sql = `SELECT ${
+    fields.length ? fields.join(", ") : "1 AS __empty"
+  } FROM ${request.collection} ${limit_clause} ${offset_clause}`;
+
+  console.log(JSON.stringify({ sql }, null, 2));
+
+  const rows = (await state.db.query(sql)).rows;
+  return rows.map((row) => {
+    delete row.__empty;
+    return row;
+  });
 }
 
 async function fetchMetrics(

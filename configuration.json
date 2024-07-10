@@ -1,5 +1,11 @@
 {
-  "risingwave": {},
+  "risingwave": {
+    "host": "localhost",
+    "port": 4566,
+    "database": "dev",
+    "user": "root",
+    "password": ""
+  },
   "tables": [
     {
       "tableName": "albums",
