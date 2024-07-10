@@ -179,9 +179,10 @@ async function fetch_rows(
     }
   }
 
-  if (query.order_by != null) {
-    throw new NotSupported("Sorting is not supported");
-  }
+  const order_by_clause =
+    query.order_by == null
+      ? ""
+      : `ORDER BY ${visit_order_by_elements(query.order_by.elements)}`;
 
   const limit_clause = query.limit == null ? "" : `LIMIT ${query.limit}`;
   const offset_clause = query.offset == null ? "" : `OFFSET ${query.offset}`;
@@ -281,6 +282,28 @@ function visit_comparison_value(parameters: any[], target: ComparisonValue) {
       throw new NotSupported("column_comparisons are not supported");
     case "variable":
       throw new NotSupported("Variables are not supported");
+  }
+}
+
+function visit_order_by_elements(elements: OrderByElement[]): String {
+  if (elements.length > 0) {
+    return elements.map(visit_order_by_element).join(", ");
+  } else {
+    return "1";
+  }
+}
+
+function visit_order_by_element(element: OrderByElement): String {
+  const direction = element.order_direction === "asc" ? "ASC" : "DESC";
+
+  switch (element.target.type) {
+    case "column":
+      if (element.target.path.length > 0) {
+        throw new NotSupported("Relationships are not supported");
+      }
+      return `${element.target.name} ${direction}`;
+    default:
+      throw new NotSupported("order_by_aggregate are not supported");
   }
 }
 
